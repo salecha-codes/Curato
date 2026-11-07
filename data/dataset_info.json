@@ -1,0 +1,6 @@
+{
+  "name": "Electronics discovery sample",
+  "source": "Bundled synthetic teaching dataset (seed 42). Not Amazon customer data.",
+  "synthetic": true,
+  "generation_seed": 42
+}
