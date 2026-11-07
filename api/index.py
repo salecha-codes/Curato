@@ -12,12 +12,23 @@ if str(root) not in sys.path:
 if not os.environ.get('VERCEL'):
     os.environ['VERCEL'] = '1'
 
+class VercelPathMiddleware:
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+
+    def __call__(self, environ, start_response):
+        matched = environ.get('HTTP_X_MATCHED_PATH') or environ.get('HTTP_X_FORWARDED_URI')
+        if matched:
+            environ['PATH_INFO'] = matched.split('?')[0]
+        elif environ.get('PATH_INFO') in ('/api/index', '/api/index.py', '/api', '/api/'):
+            environ['PATH_INFO'] = '/'
+        return self.wsgi_app(environ, start_response)
+
 try:
     from backend.app import create_app
     app = create_app(root)
+    app.wsgi_app = VercelPathMiddleware(app.wsgi_app)
 except Exception as e:
-    # If the app fails to start (e.g. scipy import timeout),
-    # return a diagnostic Flask app so we can see what went wrong
     from flask import Flask, jsonify
     app = Flask(__name__)
     _boot_error = traceback.format_exc()
