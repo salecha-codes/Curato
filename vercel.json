@@ -1,4 +1,12 @@
 {
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "data/**"
+    },
+    "app.py": {
+      "includeFiles": "data/**"
+    }
+  },
   "rewrites": [
     {
       "source": "/(.*)",

@@ -1,5 +1,6 @@
 """Dataset state and SQLite rating overrides. Fitting is atomic before activation."""
 from pathlib import Path
+from io import BytesIO
 import os
 import sqlite3
 import json
@@ -7,6 +8,7 @@ import hashlib
 import pandas as pd
 from .data import read_ratings, read_catalog
 from .models import RecommendationEngine
+from .embedded_data import DEFAULT_RATINGS_CSV, DEFAULT_PRODUCTS_CSV, DEFAULT_INFO_JSON
 
 
 class Store:
@@ -18,23 +20,55 @@ class Store:
         self.runtime = Path('/tmp/curato-ai') if os.environ.get('VERCEL') else self.root/'runtime'
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.db = self.runtime/'ratings.sqlite3'
-        with sqlite3.connect(self.db) as db:
-            db.execute('CREATE TABLE IF NOT EXISTS ratings (dataset_id TEXT, user_id TEXT, product_id TEXT, rating REAL, PRIMARY KEY(dataset_id,user_id,product_id))')
+        try:
+            with sqlite3.connect(self.db) as db:
+                db.execute('CREATE TABLE IF NOT EXISTS ratings (dataset_id TEXT, user_id TEXT, product_id TEXT, rating REAL, PRIMARY KEY(dataset_id,user_id,product_id))')
+        except Exception:
+            self.db = ':memory:'
+            with sqlite3.connect(self.db) as db:
+                db.execute('CREATE TABLE IF NOT EXISTS ratings (dataset_id TEXT, user_id TEXT, product_id TEXT, rating REAL, PRIMARY KEY(dataset_id,user_id,product_id))')
         self.active = self.runtime/'active.json'
         self.load()
 
     def load(self):
         info = json.loads(self.active.read_text()) if self.active.exists() else None
-        ratings_path = self.runtime/'imported.csv' if info else self.data_dir/'ratings.csv'
-        metadata = self.runtime/'catalog.csv' if info and (self.runtime/'catalog.csv').exists() else None if info else self.data_dir/'products.csv'
-        base,report = read_ratings(ratings_path)
+        
+        # Load ratings: check runtime override, then disk file, then embedded dataset
+        ratings_path = self.runtime/'imported.csv' if info and (self.runtime/'imported.csv').exists() else self.data_dir/'ratings.csv'
+        if ratings_path.exists():
+            base, report = read_ratings(ratings_path)
+        else:
+            base, report = read_ratings(BytesIO(DEFAULT_RATINGS_CSV.encode('utf-8')))
+            
         self.dataset_id = report['dataset_id']
-        if info and 'cleaning_report' in info: report=info['cleaning_report']
-        with sqlite3.connect(self.db) as db:
-            updates = pd.read_sql_query('SELECT user_id,product_id,rating FROM ratings WHERE dataset_id=?',db,params=(self.dataset_id,))
-        ratings = (pd.concat([base,updates]) if not updates.empty else base).drop_duplicates(['user_id','product_id'],keep='last').reset_index(drop=True)
-        catalog = read_catalog(metadata, ratings.product_id)
-        self.activate(ratings,catalog,report,info or json.loads((self.data_dir/'dataset_info.json').read_text()))
+        if info and 'cleaning_report' in info:
+            report = info['cleaning_report']
+            
+        try:
+            with sqlite3.connect(self.db) as db:
+                updates = pd.read_sql_query('SELECT user_id,product_id,rating FROM ratings WHERE dataset_id=?', db, params=(self.dataset_id,))
+        except Exception:
+            updates = pd.DataFrame()
+            
+        ratings = (pd.concat([base, updates]) if not updates.empty else base).drop_duplicates(['user_id', 'product_id'], keep='last').reset_index(drop=True)
+        
+        # Load catalog metadata: check runtime, then disk file, then embedded catalog
+        metadata = self.runtime/'catalog.csv' if info and (self.runtime/'catalog.csv').exists() else self.data_dir/'products.csv'
+        if metadata and metadata.exists():
+            catalog = read_catalog(metadata, ratings.product_id)
+        else:
+            catalog = read_catalog(BytesIO(DEFAULT_PRODUCTS_CSV.encode('utf-8')), ratings.product_id)
+            
+        # Load dataset info metadata: check active info, then disk file, then embedded info
+        dataset_info = info
+        if not dataset_info:
+            info_path = self.data_dir/'dataset_info.json'
+            if info_path.exists():
+                dataset_info = json.loads(info_path.read_text())
+            else:
+                dataset_info = json.loads(DEFAULT_INFO_JSON)
+                
+        self.activate(ratings, catalog, report, dataset_info)
 
     def activate(self, ratings, catalog, report, info):
         engine = RecommendationEngine(ratings)

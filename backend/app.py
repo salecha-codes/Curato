@@ -47,6 +47,14 @@ def create_app(root=None):
             return jsonify(error='Upload is too large. Maximum request size is 3 MB.' if error.code==413 else error.description),error.code
         return error
 
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        import traceback
+        traceback.print_exc()
+        if isinstance(e, HTTPException):
+            return jsonify(error=e.description), e.code
+        return jsonify(error=f'Internal Server Error: {str(e)}', type=type(e).__name__), 500
+
     def integer(key, default, low, high):
         try:v=int(request.args.get(key,default))
         except (TypeError,ValueError):raise ValueError(f'{key} must be an integer.')
@@ -168,18 +176,32 @@ def create_app(root=None):
     @app.get('/data/<kind>')
     def download(kind):
         if kind not in ['ratings','products']:return jsonify(error='Unknown sample file'),404
-        return send_from_directory(root/'data',f'{kind}.csv',as_attachment=True)
+        filepath = root/'data'/f'{kind}.csv'
+        if filepath.exists():
+            return send_from_directory(root/'data',f'{kind}.csv',as_attachment=True)
+        from .embedded_data import DEFAULT_RATINGS_CSV, DEFAULT_PRODUCTS_CSV
+        csv_content = DEFAULT_RATINGS_CSV if kind == 'ratings' else DEFAULT_PRODUCTS_CSV
+        return Response(csv_content, mimetype='text/csv', headers={'Content-Disposition': f'attachment; filename={kind}.csv'})
 
     @app.get('/')
-    def index():return send_from_directory(root/'public','index.html')
+    def index():
+        filepath = root/'public'/'index.html'
+        if filepath.exists():
+            return send_from_directory(root/'public','index.html')
+        return send_from_directory(Path.cwd()/'public','index.html')
 
     @app.get('/<path:path>')
     def frontend(path):
         target = root/'public'/path
         if target.is_file():
             return send_from_directory(root/'public',path)
+        alt_target = Path.cwd()/'public'/path
+        if alt_target.is_file():
+            return send_from_directory(Path.cwd()/'public',path)
         if path.startswith('api/') or is_api():
             return jsonify(error='Endpoint not found'),404
-        return send_from_directory(root/'public','index.html')
+        if (root/'public'/'index.html').exists():
+            return send_from_directory(root/'public','index.html')
+        return send_from_directory(Path.cwd()/'public','index.html')
 
     return app
