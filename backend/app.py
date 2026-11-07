@@ -18,9 +18,14 @@ def create_app(root=None):
     app.config['STORE']=store
     lock = RLock()
 
+    API_PREFIXES = ('/api/', '/overview', '/users', '/matrix', '/profile', '/catalog', '/recommendations', '/ratings', '/dataset', '/data/')
+
+    def is_api():
+        return any(request.path.startswith(p) for p in API_PREFIXES)
+
     @app.before_request
     def before():
-        if request.path.startswith('/api/'):
+        if is_api():
             lock.acquire();g.locked=True
 
     @app.teardown_request
@@ -30,7 +35,7 @@ def create_app(root=None):
     @app.after_request
     def headers(response):
         response.headers['X-Content-Type-Options']='nosniff'
-        if request.path.startswith('/api/'):response.headers['Cache-Control']='no-store'
+        if is_api():response.headers['Cache-Control']='no-store'
         return response
 
     @app.errorhandler(ValueError)
@@ -38,7 +43,7 @@ def create_app(root=None):
 
     @app.errorhandler(HTTPException)
     def http_error(error):
-        if request.path.startswith('/api/'):
+        if is_api():
             return jsonify(error='Upload is too large. Maximum request size is 3 MB.' if error.code==413 else error.description),error.code
         return error
 
@@ -54,6 +59,7 @@ def create_app(root=None):
         return p
 
     @app.get('/api/overview')
+    @app.get('/overview')
     def overview():
         r,e=store.ratings,store.engine
         histogram=r.rating.round().clip(1,5).value_counts()
@@ -68,6 +74,7 @@ def create_app(root=None):
                        singular_values=[] if e.svd.s is None else np.round(e.svd.s,3).tolist())
 
     @app.get('/api/users')
+    @app.get('/users')
     def users():
         q=request.args.get('q','').lower()
         counts=store.ratings.groupby('user_id').rating.agg(['size','mean'])
@@ -75,12 +82,14 @@ def create_app(root=None):
         return jsonify(users=data[:500],total=len(data),limit=500)
 
     @app.get('/api/matrix')
+    @app.get('/matrix')
     def matrix():
         users=store.engine.users[:12];items=store.engine.items[:16]
         cells=store.engine.matrix[:len(users),:len(items)].toarray().tolist()
         return jsonify(users=users,products=items,values=cells)
 
     @app.get('/api/profile')
+    @app.get('/profile')
     def profile():
         uid=request.args.get('user_id','NEW')
         rows=store.ratings[store.ratings.user_id==uid]
@@ -90,6 +99,7 @@ def create_app(root=None):
         return jsonify(user_id=uid,cold_start=rows.empty,ratings=history)
 
     @app.get('/api/catalog')
+    @app.get('/catalog')
     def catalog():
         query=request.args.get('q','').lower();cat=request.args.get('category','All')
         records=[catalog_record(p['product_id']) for p in store.catalog if (cat=='All' or cat==p['category']) and query in (p['name']+' '+p['product_id']+' '+p['category']).lower()]
@@ -114,9 +124,11 @@ def create_app(root=None):
                 'explanation':'Scores are estimated 1–5 ratings, not confidence percentages. Already-rated products are excluded.'}
 
     @app.get('/api/recommendations')
+    @app.get('/recommendations')
     def recommendations():return jsonify(recommendation_data())
 
     @app.get('/api/recommendations/export')
+    @app.get('/recommendations/export')
     def export():
         data=recommendation_data();f=StringIO();writer=csv.writer(f)
         writer.writerow(['product_id','name','method','predicted_rating','rating_count'])
@@ -126,6 +138,7 @@ def create_app(root=None):
         return Response(f.getvalue(),mimetype='text/csv',headers={'Content-Disposition':'attachment; filename=recommendations.csv'})
 
     @app.post('/api/ratings')
+    @app.post('/ratings')
     def rate():
         body=request.get_json(silent=True) or {}
         uid=str(body.get('user_id','')).strip();pid=str(body.get('product_id','')).strip()
@@ -138,6 +151,7 @@ def create_app(root=None):
         return jsonify(message='Rating saved to SQLite. Models retrained.',version=store.version)
 
     @app.post('/api/dataset')
+    @app.post('/dataset')
     def upload():
         file=request.files.get('ratings')
         if not file:raise ValueError('Choose a ratings CSV first.')
@@ -146,10 +160,12 @@ def create_app(root=None):
         return jsonify(message='Dataset cleaned, loaded, and models trained.',report=store.report)
 
     @app.post('/api/dataset/sample')
+    @app.post('/dataset/sample')
     def restore():
         store.restore_sample();return jsonify(message='Sample dataset restored. Saved sample ratings are retained.')
 
     @app.get('/api/data/<kind>')
+    @app.get('/data/<kind>')
     def download(kind):
         if kind not in ['ratings','products']:return jsonify(error='Unknown sample file'),404
         return send_from_directory(root/'data',f'{kind}.csv',as_attachment=True)
@@ -158,6 +174,12 @@ def create_app(root=None):
     def index():return send_from_directory(root/'public','index.html')
 
     @app.get('/<path:path>')
-    def frontend(path):return send_from_directory(root/'public',path)
+    def frontend(path):
+        target = root/'public'/path
+        if target.is_file():
+            return send_from_directory(root/'public',path)
+        if path.startswith('api/') or is_api():
+            return jsonify(error='Endpoint not found'),404
+        return send_from_directory(root/'public','index.html')
 
     return app
