@@ -1,5 +1,6 @@
 """Dataset state and SQLite rating overrides. Fitting is atomic before activation."""
 from pathlib import Path
+import os
 import sqlite3
 import json
 import hashlib
@@ -12,8 +13,7 @@ class Store:
     def __init__(self, root):
         self.root = Path(root)
         self.data_dir = self.root/'data'
-        self.runtime = self.root/'runtime'
-        self.runtime.mkdir(exist_ok=True)
+        # Vercel's deployed source is read-only; use its writable temporary directory.\n        # Local development continues to use the ignored runtime/ directory.\n        self.runtime = Path('/tmp/curato-ai') if os.environ.get('VERCEL') else self.root/'runtime'\n        self.runtime.mkdir(parents=True, exist_ok=True)
         self.db = self.runtime/'ratings.sqlite3'
         with sqlite3.connect(self.db) as db:
             db.execute('CREATE TABLE IF NOT EXISTS ratings (dataset_id TEXT, user_id TEXT, product_id TEXT, rating REAL, PRIMARY KEY(dataset_id,user_id,product_id))')
